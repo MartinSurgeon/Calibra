@@ -11,6 +11,7 @@ import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import androidx.core.content.FileProvider
 import com.example.domain.GeometryEngine
+import com.example.domain.MeasurementSource
 import com.example.domain.ShapeMode
 import com.example.domain.UnitConverterEngine
 import kotlinx.coroutines.Dispatchers
@@ -37,7 +38,7 @@ object ExportManager {
 
     fun buildCsvString(measurements: List<MeasurementEntity>): String {
         val sb = StringBuilder()
-        sb.appendLine("ID,Title,Category,Shape,PrimaryValue,Unit,Details,Calibration,Notes,Pinned,Timestamp")
+        sb.appendLine("ID,Title,Category,Shape,PrimaryValue,Unit,Details,Calibration,Notes,Pinned,Timestamp,Source,WorldPointsMeters")
         for (m in measurements) {
             val cols = listOf(
                 m.id.toString(),
@@ -50,7 +51,9 @@ object ExportManager {
                 csvEscape(m.calibrationRef),
                 csvEscape(m.notes),
                 m.pinned.toString(),
-                csvEscape(dateFormatter.format(Date(m.createdAtMillis)))
+                csvEscape(dateFormatter.format(Date(m.createdAtMillis))),
+                csvEscape(m.measurementSource.label),
+                csvEscape(m.worldPointsJson)
             )
             sb.appendLine(cols.joinToString(","))
         }
@@ -66,7 +69,7 @@ object ExportManager {
     fun buildBackupJson(measurements: List<MeasurementEntity>): String {
         val root = JSONObject()
         root.put("app", "Calibra")
-        root.put("schemaVersion", 1)
+        root.put("schemaVersion", 2)
         root.put("exportedAt", System.currentTimeMillis())
         val array = JSONArray()
         for (m in measurements) {
@@ -82,6 +85,9 @@ object ExportManager {
             obj.put("pointsJson", m.pointsJson)
             obj.put("createdAtMillis", m.createdAtMillis)
             obj.put("pinned", m.pinned)
+            obj.put("source", m.source)
+            obj.put("worldPointsJson", m.worldPointsJson)
+            // Photos stay on-device (absolute paths don't transfer between installs).
             array.put(obj)
         }
         root.put("measurements", array)
@@ -106,7 +112,9 @@ object ExportManager {
                     calibrationRef = obj.optString("calibrationRef", "Imported"),
                     pointsJson = obj.optString("pointsJson", ""),
                     createdAtMillis = obj.optLong("createdAtMillis", System.currentTimeMillis()),
-                    pinned = obj.optBoolean("pinned", false)
+                    pinned = obj.optBoolean("pinned", false),
+                    source = MeasurementSource.fromName(obj.optString("source", "")).name,
+                    worldPointsJson = obj.optString("worldPointsJson", "")
                 )
             )
         }
@@ -286,10 +294,12 @@ object ExportManager {
                     canvas.drawRoundRect(cardRect, 8f, 8f, cardBgPaint)
                     canvas.drawRoundRect(cardRect, 8f, 8f, cardStrokePaint)
 
-                    // Blueprint mini-thumbnail on left
+                    // Photo (when captured) or blueprint mini-thumbnail on left
                     val thumbRect = RectF(margin + 10f, y + 10f, margin + 82f, y + 82f)
                     canvas.drawRoundRect(thumbRect, 6f, 6f, blueprintBgPaint)
-                    drawMiniShape(canvas, thumbRect, m.shapeMode, m.pointsJson, blueprintLinePaint, blueprintNodePaint)
+                    if (!drawPhotoThumbnail(canvas, thumbRect, m.photoPath)) {
+                        drawMiniShape(canvas, thumbRect, m.shapeMode, m.pointsJson, blueprintLinePaint, blueprintNodePaint)
+                    }
 
                     // Details
                     val textX = margin + 96f
@@ -299,7 +309,7 @@ object ExportManager {
                     canvas.drawText(valueStr, pageWidth - margin - 12f - valueWidth, y + 24f, valuePaint)
 
                     canvas.drawText(
-                        "${m.category} • ${m.shapeMode} • Cal: ${m.calibrationRef}",
+                        "${m.category} • ${m.shapeMode} • ${m.measurementSource.label} • Ref: ${m.calibrationRef}".take(96),
                         textX,
                         y + 42f,
                         mutedPaint
@@ -330,6 +340,24 @@ object ExportManager {
 
         document.writeTo(output)
         document.close()
+    }
+
+    /** Draws the measurement photo center-cropped into [rect]; false if there is none. */
+    private fun drawPhotoThumbnail(canvas: android.graphics.Canvas, rect: RectF, photoPath: String): Boolean {
+        if (photoPath.isBlank()) return false
+        val bitmap = SnapshotStore.decodeSampled(photoPath, 256) ?: return false
+        val scale = maxOf(rect.width() / bitmap.width, rect.height() / bitmap.height)
+        val srcW = rect.width() / scale
+        val srcH = rect.height() / scale
+        val left = ((bitmap.width - srcW) / 2f).toInt().coerceAtLeast(0)
+        val top = ((bitmap.height - srcH) / 2f).toInt().coerceAtLeast(0)
+        val src = android.graphics.Rect(left, top, (left + srcW).toInt(), (top + srcH).toInt())
+        canvas.save()
+        canvas.clipPath(Path().apply { addRoundRect(rect, 6f, 6f, Path.Direction.CW) })
+        canvas.drawBitmap(bitmap, src, rect, Paint(Paint.FILTER_BITMAP_FLAG))
+        canvas.restore()
+        bitmap.recycle()
+        return true
     }
 
     private fun drawMiniShape(

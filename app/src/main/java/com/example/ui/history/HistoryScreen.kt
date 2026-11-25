@@ -25,6 +25,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Delete
@@ -58,6 +59,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -66,9 +68,13 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.MeasurementEntity
+import com.example.data.measurementSource
+import com.example.domain.MeasurementSource
 import com.example.domain.UnitConverterEngine
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.LocalCalibraTokens
@@ -91,6 +97,7 @@ fun HistoryScreen(
     val filter by viewModel.historyFilter.collectAsStateWithLifecycle()
 
     var editingItem by remember { mutableStateOf<MeasurementEntity?>(null) }
+    var detailItemId by remember { mutableStateOf<Long?>(null) }
 
     val pdfSaver = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/pdf")
@@ -258,6 +265,7 @@ fun HistoryScreen(
                         onEdit = { editingItem = selectedItem },
                         onDelete = { viewModel.deleteMeasurement(selectedItem) },
                         onTogglePin = { viewModel.togglePin(selectedItem) },
+                        onSharePhoto = { viewModel.sharePhoto(context, selectedItem) },
                         modifier = Modifier
                             .weight(0.45f)
                             .fillMaxHeight()
@@ -276,12 +284,41 @@ fun HistoryScreen(
                     MeasurementHistoryCard(
                         item = item,
                         isSelected = false,
-                        onSelect = { editingItem = item },
+                        onSelect = { detailItemId = item.id },
                         onTogglePin = { viewModel.togglePin(item) },
                         onEdit = { editingItem = item },
                         onDelete = { viewModel.deleteMeasurement(item) }
                     )
                 }
+            }
+        }
+    }
+
+    // Phone-sized detail view (tablets show the detail pane side by side).
+    detailItemId?.let { id ->
+        val item = totalCount.firstOrNull { it.id == id }
+        if (item == null) {
+            detailItemId = null
+        } else {
+            Dialog(
+                onDismissRequest = { detailItemId = null },
+                properties = DialogProperties(usePlatformDefaultWidth = false)
+            ) {
+                MeasurementDetailPane(
+                    item = item,
+                    onEdit = { editingItem = item },
+                    onDelete = {
+                        detailItemId = null
+                        viewModel.deleteMeasurement(item)
+                    },
+                    onTogglePin = { viewModel.togglePin(item) },
+                    onSharePhoto = { viewModel.sharePhoto(context, item) },
+                    onClose = { detailItemId = null },
+                    modifier = Modifier
+                        .fillMaxWidth(0.94f)
+                        .fillMaxHeight(0.9f)
+                        .testTag("history_detail_dialog")
+                )
             }
         }
     }
@@ -330,11 +367,36 @@ private fun MeasurementHistoryCard(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            BlueprintThumbnail(
-                shapeModeName = item.shapeMode,
-                pointsJson = item.pointsJson,
-                modifier = Modifier.size(68.dp)
-            )
+            Box(modifier = Modifier.size(68.dp)) {
+                val blueprint: @Composable () -> Unit = {
+                    BlueprintThumbnail(
+                        shapeModeName = item.shapeMode,
+                        pointsJson = item.pointsJson,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                if (item.photoPath.isNotBlank()) {
+                    SnapshotImage(
+                        path = item.photoPath,
+                        contentDescription = null,
+                        maxDimension = 240,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(12.dp)),
+                        fallback = blueprint
+                    )
+                } else {
+                    blueprint()
+                }
+                if (item.measurementSource == MeasurementSource.ARCORE) {
+                    SourceBadge(
+                        text = MeasurementSource.ARCORE.shortLabel,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(4.dp)
+                    )
+                }
+            }
 
             Column(
                 modifier = Modifier.weight(1f),
@@ -415,15 +477,35 @@ private fun MeasurementHistoryCard(
 }
 
 @Composable
+private fun SourceBadge(text: String, modifier: Modifier = Modifier) {
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = Color(0xE610B981),
+        modifier = modifier
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = Color.White,
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+        )
+    }
+}
+
+@Composable
 private fun MeasurementDetailPane(
     item: MeasurementEntity,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onTogglePin: () -> Unit,
-    modifier: Modifier = Modifier
+    onSharePhoto: () -> Unit,
+    modifier: Modifier = Modifier,
+    onClose: (() -> Unit)? = null
 ) {
     val tokens = LocalCalibraTokens.current
     val dateFormat = remember { SimpleDateFormat("EEE, MMM d yyyy • HH:mm", Locale.US) }
+    val source = item.measurementSource
 
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -438,12 +520,36 @@ private fun MeasurementDetailPane(
                 .padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
+            if (onClose != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Measurement", style = MaterialTheme.typography.titleMedium)
+                    IconButton(onClick = onClose, modifier = Modifier.testTag("close_detail_button")) {
+                        Icon(Icons.Default.Close, contentDescription = "Close")
+                    }
+                }
+            }
+            if (item.photoPath.isNotBlank()) {
+                SnapshotImage(
+                    path = item.photoPath,
+                    contentDescription = "Photo of ${item.title}",
+                    maxDimension = 1080,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .testTag("history_detail_photo")
+                )
+            }
             BlueprintThumbnail(
                 shapeModeName = item.shapeMode,
                 pointsJson = item.pointsJson,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(180.dp)
+                    .height(if (item.photoPath.isNotBlank()) 120.dp else 180.dp)
             )
             Text(text = item.title, style = MaterialTheme.typography.headlineSmall)
             Text(
@@ -468,10 +574,19 @@ private fun MeasurementDetailPane(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = "Calibration Reference: ${item.calibrationRef}",
+                        text = "Captured with: ${source.label}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (source == MeasurementSource.ARCORE) MaterialTheme.colorScheme.secondary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (source == MeasurementSource.CALIBRATED) {
+                        Text(
+                            text = "Calibration Reference: ${item.calibrationRef}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     Text(
                         text = "Recorded: ${dateFormat.format(Date(item.createdAtMillis))}",
                         style = MaterialTheme.typography.bodySmall,
@@ -482,6 +597,18 @@ private fun MeasurementDetailPane(
             if (item.notes.isNotBlank()) {
                 Text("Notes", style = MaterialTheme.typography.titleSmall)
                 Text(item.notes, style = MaterialTheme.typography.bodyMedium)
+            }
+            if (item.photoPath.isNotBlank()) {
+                OutlinedButton(
+                    onClick = onSharePhoto,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("share_photo_button")
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Share photo")
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 FilledTonalButton(onClick = onTogglePin, modifier = Modifier.weight(1f)) {

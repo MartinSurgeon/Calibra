@@ -105,6 +105,9 @@ dependencies {
   implementation(libs.androidx.navigation.compose)
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
+  // ARCore world tracking (declared "optional" in the manifest so non-AR devices keep the
+  // calibrated camera mode).
+  implementation(libs.google.ar.core)
   // implementation(libs.coil.compose)
   // implementation(libs.converter.moshi)
   // implementation(libs.firebase.ai)

@@ -1,10 +1,14 @@
 package com.example.viewmodel
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.ar.ArAvailability
+import com.example.ar.ArCoreSupport
+import com.example.ar.ArMeasurementSnapshot
 import com.example.data.AppPreferences
 import com.example.data.DeviceLevelSensor
 import com.example.data.ExportManager
@@ -13,6 +17,7 @@ import com.example.data.MeasurementDatabase
 import com.example.data.MeasurementEntity
 import com.example.data.MeasurementRepository
 import com.example.data.PreferencesRepository
+import com.example.data.SnapshotStore
 import com.example.domain.CalibrationPreset
 import com.example.domain.CalibrationProfile
 import com.example.domain.DetectedOutline
@@ -20,9 +25,11 @@ import com.example.domain.GeometryEngine
 import com.example.domain.LengthDisplayUnit
 import com.example.domain.MeasureCategory
 import com.example.domain.MeasureUnit
+import com.example.domain.MeasurementSource
 import com.example.domain.NormPoint
 import com.example.domain.ShapeMeasurementResult
 import com.example.domain.ShapeMode
+import com.example.domain.SpatialMeasurementEngine
 import com.example.domain.UnitConverterEngine
 import com.example.ui.theme.ThemeMode
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -33,6 +40,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -93,7 +101,9 @@ data class HistoryFilterState(
 class CalibraViewModel(
     private val measurementRepo: MeasurementRepository,
     private val prefsRepo: PreferencesRepository,
-    levelSensor: DeviceLevelSensor
+    levelSensor: DeviceLevelSensor,
+    private val snapshotStore: SnapshotStore,
+    private val checkArAvailability: suspend () -> ArAvailability
 ) : ViewModel() {
 
     val preferences: StateFlow<AppPreferences> = prefsRepo.preferencesFlow.stateIn(
@@ -132,19 +142,37 @@ class CalibraViewModel(
     private var lastDeletedMeasurement: MeasurementEntity? = null
     private var initialTutorialChecked = false
 
+    private val _arAvailability = MutableStateFlow(ArAvailability.CHECKING)
+    val arAvailability: StateFlow<ArAvailability> = _arAvailability.asStateFlow()
+
+    /** Focused ARCore measurement while the AR engine drives the Measure screen, else null. */
+    private val _arMeasurement = MutableStateFlow<ArMeasurementSnapshot?>(null)
+    val arMeasurement: StateFlow<ArMeasurementSnapshot?> = _arMeasurement.asStateFlow()
+
+    /** Photo captured for the measurement about to be saved. */
+    private val _pendingSnapshotPath = MutableStateFlow<String?>(null)
+    val pendingSnapshotPath: StateFlow<String?> = _pendingSnapshotPath.asStateFlow()
+
     val liveMeasurementResult: StateFlow<ShapeMeasurementResult> = combine(
         _measureState,
         preferences,
-        levelReading
-    ) { measure, prefs, level ->
-        GeometryEngine.calculate(
-            mode = measure.shapeMode,
-            points = measure.points,
-            aspectRatioHeightOverWidth = measure.viewportAspectRatio,
-            calibration = prefs.calibration,
-            displayUnit = prefs.displayUnit,
-            tiltDegrees = if (level.hasSensor) level.planeDeviationDeg else 0f
-        )
+        levelReading,
+        _arMeasurement
+    ) { measure, prefs, level, ar ->
+        if (ar != null) {
+            // Ignore a snapshot from a previous mode until the AR engine catches up.
+            val points = if (ar.mode == measure.shapeMode) ar.points else emptyList()
+            SpatialMeasurementEngine.calculate(measure.shapeMode, points, prefs.displayUnit)
+        } else {
+            GeometryEngine.calculate(
+                mode = measure.shapeMode,
+                points = measure.points,
+                aspectRatioHeightOverWidth = measure.viewportAspectRatio,
+                calibration = prefs.calibration,
+                displayUnit = prefs.displayUnit,
+                tiltDegrees = if (level.hasSensor) level.planeDeviationDeg else 0f
+            )
+        }
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000L),
@@ -196,6 +224,69 @@ class CalibraViewModel(
                     }
                 }
             }
+        }
+        refreshArAvailability()
+        viewModelScope.launch {
+            // Remove photos left behind by deletions from earlier sessions.
+            val referenced = measurementRepo.allMeasurements.first()
+                .mapNotNull { it.photoPath.takeIf(String::isNotBlank) }
+                .toSet()
+            snapshotStore.pruneOrphans(referenced)
+        }
+    }
+
+    // --- AR Engine ---
+
+    fun refreshArAvailability() {
+        viewModelScope.launch {
+            _arAvailability.value = checkArAvailability()
+        }
+    }
+
+    fun updateArMeasurement(snapshot: ArMeasurementSnapshot?) {
+        _arMeasurement.value = snapshot
+    }
+
+    fun setArPreferred(enabled: Boolean) {
+        viewModelScope.launch { prefsRepo.setArPreferred(enabled) }
+    }
+
+    fun setArShowPlanes(enabled: Boolean) {
+        viewModelScope.launch { prefsRepo.setArShowPlanes(enabled) }
+    }
+
+    fun setArDepthAssist(enabled: Boolean) {
+        viewModelScope.launch { prefsRepo.setArDepthAssist(enabled) }
+    }
+
+    // --- Measurement Photos ---
+
+    /** Persists a captured viewport photo; it is attached to the next saved measurement. */
+    suspend fun storePendingSnapshot(bitmap: Bitmap): Boolean {
+        discardPendingSnapshot()
+        val result = snapshotStore.save(bitmap)
+        result.onSuccess { _pendingSnapshotPath.value = it }
+            .onFailure { _snackbarMessages.tryEmit("Couldn't save photo: ${it.localizedMessage}") }
+        return result.isSuccess
+    }
+
+    fun discardPendingSnapshot() {
+        val path = _pendingSnapshotPath.value ?: return
+        _pendingSnapshotPath.value = null
+        viewModelScope.launch { snapshotStore.delete(path) }
+    }
+
+    fun sharePhoto(context: Context, item: MeasurementEntity) {
+        if (item.photoPath.isBlank()) return
+        runCatching {
+            ExportManager.launchShareIntent(
+                context,
+                snapshotStore.shareUri(item.photoPath),
+                "image/jpeg",
+                "${item.title} — ${UnitConverterEngine.formatValue(item.primaryValue, 2)} ${item.primaryUnit}"
+            )
+        }.onFailure {
+            _snackbarMessages.tryEmit("Unable to share photo: ${it.localizedMessage}")
         }
     }
 
@@ -320,6 +411,9 @@ class CalibraViewModel(
         val result = liveMeasurementResult.value
         val state = _measureState.value
         val cal = preferences.value.calibration
+        val ar = _arMeasurement.value?.takeIf { it.mode == state.shapeMode }
+        val photo = _pendingSnapshotPath.value.orEmpty()
+        _pendingSnapshotPath.value = null
         val cleanTitle = title.trim().ifBlank { "${result.shapeMode.label} Measurement" }
         val entity = MeasurementEntity(
             title = cleanTitle,
@@ -329,13 +423,22 @@ class CalibraViewModel(
             primaryUnit = result.primaryUnitSymbol,
             secondarySummary = result.secondarySummary,
             notes = notes.trim(),
-            calibrationRef = cal.referenceName,
-            pointsJson = GeometryEngine.serializePoints(state.points),
-            createdAtMillis = System.currentTimeMillis()
+            calibrationRef = if (ar != null) "ARCore world tracking" else cal.referenceName,
+            pointsJson = if (ar != null) {
+                GeometryEngine.serializePoints(SpatialMeasurementEngine.blueprint(state.shapeMode, ar.points))
+            } else {
+                GeometryEngine.serializePoints(state.points)
+            },
+            createdAtMillis = System.currentTimeMillis(),
+            source = if (ar != null) MeasurementSource.ARCORE.name else MeasurementSource.CALIBRATED.name,
+            worldPointsJson = ar?.let { SpatialMeasurementEngine.serialize(it.points) }.orEmpty(),
+            photoPath = photo
         )
         viewModelScope.launch {
             measurementRepo.insert(entity)
-            _snackbarMessages.tryEmit("Saved \"$cleanTitle\" to offline log")
+            _snackbarMessages.tryEmit(
+                if (photo.isNotBlank()) "Saved \"$cleanTitle\" with photo" else "Saved \"$cleanTitle\" to offline log"
+            )
         }
     }
 
@@ -616,7 +719,13 @@ class CalibraViewModel(
                     val repo = MeasurementRepository(db.measurementDao())
                     val prefs = PreferencesRepository(appCtx)
                     val sensor = DeviceLevelSensor(appCtx)
-                    return CalibraViewModel(repo, prefs, sensor) as T
+                    return CalibraViewModel(
+                        measurementRepo = repo,
+                        prefsRepo = prefs,
+                        levelSensor = sensor,
+                        snapshotStore = SnapshotStore(appCtx),
+                        checkArAvailability = { ArCoreSupport.checkAvailability(appCtx) }
+                    ) as T
                 }
             }
     }

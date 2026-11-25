@@ -72,10 +72,10 @@ private data class TutorialStep(
 
 private val tutorialSteps = listOf(
     TutorialStep(
-        title = "Automatic 3D Snap & AR Outlining",
+        title = "True-Scale AR World Tracking",
         subtitle = "Step 1 of 4 • Visual Scanning",
-        description = "Point your camera at rooms or objects and pick a shape — 3D Snap, Line, Rectangle, Circle, Polygon, or Angle. Calibra outlines edges in real time with live S, V, and P telemetry plus a 3D isometric preview.",
-        tip = "Try picking a shape below to preview what Calibra measures automatically.",
+        description = "On ARCore devices, sweep your phone slowly until surfaces light up with dots, aim the reticle and tap + to drop anchored points — lines, areas, circles, angles, or a full 3D box with volume. Points stay locked in place as you walk around. Other devices use live edge outlining with calibration.",
+        tip = "Lines snap to LEVEL or PLUMB automatically, and aiming at an existing point snaps onto it. Tap PHOTO to save a picture with the dimensions burned in.",
         icon = Icons.Default.AutoAwesome
     ),
     TutorialStep(

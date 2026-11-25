@@ -26,7 +26,13 @@ data class AppPreferences(
     val displayUnit: LengthDisplayUnit = LengthDisplayUnit.M,
     val hapticFeedback: Boolean = true,
     val tutorialCompleted: Boolean = false,
-    val calibration: CalibrationProfile = CalibrationProfile()
+    val calibration: CalibrationProfile = CalibrationProfile(),
+    /** Use ARCore world tracking when the device supports it (falls back to calibrated 2D). */
+    val arPreferred: Boolean = true,
+    /** Draw detected planes (dot grid) in the AR viewport. */
+    val arShowPlanes: Boolean = true,
+    /** Enable ARCore Depth API so points can be placed on non-flat surfaces. */
+    val arDepthAssist: Boolean = true
 )
 
 class PreferencesRepository(private val context: Context) {
@@ -42,6 +48,9 @@ class PreferencesRepository(private val context: Context) {
         val CALIBRATION_REF_NAME = stringPreferencesKey("calibration_ref_name")
         val TILT_COMPENSATION = booleanPreferencesKey("tilt_compensation")
         val LAST_CALIBRATED_AT = longPreferencesKey("last_calibrated_at")
+        val AR_PREFERRED = booleanPreferencesKey("ar_preferred")
+        val AR_SHOW_PLANES = booleanPreferencesKey("ar_show_planes")
+        val AR_DEPTH_ASSIST = booleanPreferencesKey("ar_depth_assist")
     }
 
     val preferencesFlow: Flow<AppPreferences> = context.calibraDataStore.data.map { prefs ->
@@ -62,8 +71,23 @@ class PreferencesRepository(private val context: Context) {
                     ?: CalibrationPreset.DOOR_WIDTH.label,
                 tiltCompensationEnabled = prefs[Keys.TILT_COMPENSATION] ?: true,
                 lastCalibratedAt = prefs[Keys.LAST_CALIBRATED_AT] ?: 0L
-            )
+            ),
+            arPreferred = prefs[Keys.AR_PREFERRED] ?: true,
+            arShowPlanes = prefs[Keys.AR_SHOW_PLANES] ?: true,
+            arDepthAssist = prefs[Keys.AR_DEPTH_ASSIST] ?: true
         )
+    }
+
+    suspend fun setArPreferred(enabled: Boolean) {
+        context.calibraDataStore.edit { it[Keys.AR_PREFERRED] = enabled }
+    }
+
+    suspend fun setArShowPlanes(enabled: Boolean) {
+        context.calibraDataStore.edit { it[Keys.AR_SHOW_PLANES] = enabled }
+    }
+
+    suspend fun setArDepthAssist(enabled: Boolean) {
+        context.calibraDataStore.edit { it[Keys.AR_DEPTH_ASSIST] = enabled }
     }
 
     suspend fun setThemeMode(mode: ThemeMode) {

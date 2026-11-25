@@ -23,18 +23,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Contrast
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Explore
-import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -49,6 +50,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -66,8 +68,14 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.ar.ArAvailability
+import com.example.ar.ArCoreSupport
+import com.example.ar.findActivity
 import com.example.data.AppPreferences
 import com.example.data.LevelReading
 import com.example.domain.CalibrationPreset
@@ -89,6 +97,35 @@ fun CalibrateScreen(
     val prefs by viewModel.preferences.collectAsStateWithLifecycle()
     val level by viewModel.levelReading.collectAsStateWithLifecycle()
     val measurements by viewModel.allMeasurements.collectAsStateWithLifecycle()
+    val arAvailability by viewModel.arAvailability.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    // Pick up a completed Google Play Services for AR install when the user returns.
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && arAvailability != ArAvailability.SUPPORTED) {
+                viewModel.refreshArAvailability()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val arEngineCard: @Composable () -> Unit = {
+        ArEngineCard(
+            availability = arAvailability,
+            prefs = prefs,
+            onPreferredToggle = viewModel::setArPreferred,
+            onShowPlanesToggle = viewModel::setArShowPlanes,
+            onDepthToggle = viewModel::setArDepthAssist,
+            onInstall = {
+                val activity = context.findActivity()
+                if (activity != null && ArCoreSupport.requestInstall(activity, userRequested = true)) {
+                    viewModel.refreshArAvailability()
+                }
+            }
+        )
+    }
 
     val pdfSaver = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/pdf")
@@ -120,6 +157,7 @@ fun CalibrateScreen(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
+                arEngineCard()
                 ReferenceCalibratorCard(
                     prefs = prefs,
                     onApplyCalibration = viewModel::applyReferenceCalibration,
@@ -161,6 +199,7 @@ fun CalibrateScreen(
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
+            arEngineCard()
             ReferenceCalibratorCard(
                 prefs = prefs,
                 onApplyCalibration = viewModel::applyReferenceCalibration,
@@ -249,6 +288,12 @@ private fun ReferenceCalibratorCard(
                     )
                 }
             }
+
+            Text(
+                text = "Used by the calibrated 2D camera mode only — ARCore mode measures at true world scale without calibration.",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.secondary
+            )
 
             Text(
                 text = "1. Pick a known physical reference object and align the Vernier caliper jaws to match its apparent width in your camera frame.",
@@ -385,6 +430,127 @@ private fun ReferenceCalibratorCard(
                 Text("${stringResource(R.string.calibrate_apply)} (${UnitConverterEngine.formatValue(knownCm, 2)} cm)")
             }
         }
+    }
+}
+
+@Composable
+private fun ArEngineCard(
+    availability: ArAvailability,
+    prefs: AppPreferences,
+    onPreferredToggle: (Boolean) -> Unit,
+    onShowPlanesToggle: (Boolean) -> Unit,
+    onDepthToggle: (Boolean) -> Unit,
+    onInstall: () -> Unit
+) {
+    val tokens = LocalCalibraTokens.current
+    val statusColor = when (availability) {
+        ArAvailability.SUPPORTED -> tokens.laserSecondary
+        ArAvailability.NEEDS_INSTALL, ArAvailability.CHECKING -> tokens.laserWarning
+        ArAvailability.UNSUPPORTED -> MaterialTheme.colorScheme.error
+    }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(tokens.cardBorderWidth, MaterialTheme.colorScheme.outline),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("ar_engine_card")
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.ViewInAr, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(8.dp))
+                Text("AR World Tracking (ARCore)", style = MaterialTheme.typography.titleMedium)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(statusColor)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = availability.label,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.testTag("ar_availability_label")
+                )
+            }
+            Text(
+                text = "Detects floors, walls and tables, then anchors your points in real 3D space — " +
+                    "measurements stay put as you walk around and need no reference calibration.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (availability == ArAvailability.NEEDS_INSTALL) {
+                Button(
+                    onClick = onInstall,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("calibrate_install_arcore_button")
+                ) {
+                    Text("Install Google Play Services for AR")
+                }
+            }
+            SettingSwitchRow(
+                title = "Use ARCore when available",
+                subtitle = "Off = always use the calibrated 2D camera mode",
+                checked = prefs.arPreferred,
+                enabled = availability != ArAvailability.UNSUPPORTED,
+                onCheckedChange = onPreferredToggle,
+                testTag = "ar_preferred_switch"
+            )
+            SettingSwitchRow(
+                title = "Show detected surfaces",
+                subtitle = "Dot grid over floors, walls and tabletops",
+                checked = prefs.arShowPlanes,
+                enabled = availability.isUsable,
+                onCheckedChange = onShowPlanesToggle,
+                testTag = "ar_planes_switch"
+            )
+            SettingSwitchRow(
+                title = "Depth-assisted placement",
+                subtitle = "Place points on curved or uneven surfaces (devices with Depth API)",
+                checked = prefs.arDepthAssist,
+                enabled = availability.isUsable,
+                onCheckedChange = onDepthToggle,
+                testTag = "ar_depth_switch"
+            )
+        }
+    }
+}
+
+@Composable
+private fun SettingSwitchRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    testTag: String
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Switch(
+            checked = checked,
+            enabled = enabled,
+            onCheckedChange = onCheckedChange,
+            modifier = Modifier.testTag(testTag)
+        )
     }
 }
 
@@ -669,7 +835,7 @@ private fun TutorialLauncherCard(onLaunchTutorial: () -> Unit) {
                 onClick = onLaunchTutorial,
                 modifier = Modifier.testTag("launch_tutorial_button")
             ) {
-                Icon(Icons.Default.HelpOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                Icon(Icons.AutoMirrored.Filled.HelpOutline, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
                 Text("Start")
             }

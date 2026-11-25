@@ -5,6 +5,10 @@
     <uses-feature
         android:name="android.hardware.camera"
         android:required="false" />
+    <!-- ARCore is optional: devices without it keep the calibrated camera measuring mode. -->
+    <uses-feature
+        android:name="android.hardware.camera.ar"
+        android:required="false" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
@@ -17,6 +21,11 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.MyApplication">
+
+        <!-- "optional": the Play Store won't force-install ARCore; Calibra offers it in-app. -->
+        <meta-data
+            android:name="com.google.ar.core"
+            android:value="optional" />
 
         <activity
             android:name=".MainActivity"

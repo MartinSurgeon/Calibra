@@ -1,5 +1,6 @@
 package com.example.ui.measure
 
+import android.graphics.Bitmap
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
@@ -41,6 +42,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -56,6 +58,7 @@ import com.example.domain.ShapeMeasurementResult
 import com.example.domain.ShapeMode
 import com.example.domain.ShapeOutlineAnalyzer
 import com.example.domain.UnitConverterEngine
+import com.example.ui.theme.CalibraVisualTokens
 import com.example.ui.theme.LocalCalibraTokens
 import java.util.concurrent.Executors
 import kotlin.math.PI
@@ -82,18 +85,65 @@ fun ArViewportCanvas(
     onDragStarted: () -> Unit,
     onMovePoint: (Int, NormPoint) -> Unit,
     onAddPolygonPoint: (NormPoint) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    captureHandle: ViewportCaptureHandle? = null
 ) {
     val tokens = LocalCalibraTokens.current
     val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
     var viewportSize by remember { mutableStateOf(IntSize(1, 1)) }
     var activeHandleIndex by remember { mutableIntStateOf(-1) }
     var cameraError by remember { mutableStateOf(false) }
+    var previewViewRef by remember { mutableStateOf<PreviewView?>(null) }
 
     val latestPoints by rememberUpdatedState(points)
     val latestMode by rememberUpdatedState(shapeMode)
     val latestAuto by rememberUpdatedState(autoOutlineEnabled && !isOutlineFrozen)
     val latestOnDetected by rememberUpdatedState(onOutlineDetected)
+    val latestCaptureParams by rememberUpdatedState(
+        CalibratedCaptureParams(
+            liveCamera = cameraActive && !cameraError,
+            flashlight = flashlightEnabled,
+            shapeMode = shapeMode,
+            points = points,
+            result = measurementResult,
+            displayUnit = displayUnit,
+            tokens = tokens
+        )
+    )
+
+    // Photo capture: camera frame (or studio backdrop) with the dimension overlay burned in.
+    DisposableEffect(captureHandle) {
+        val handle = captureHandle
+        val provider: suspend () -> Bitmap? = provider@{
+            val p = latestCaptureParams
+            val w = viewportSize.width
+            val h = viewportSize.height
+            if (w <= 1 || h <= 1) return@provider null
+            val cameraFrame = if (p.liveCamera) runCatching { previewViewRef?.bitmap }.getOrNull() else null
+            val base = when {
+                cameraFrame == null -> renderOverlayOnto(Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888), density) {
+                    drawStudioBackdrop(p.tokens.highContrast, p.flashlight)
+                }
+                cameraFrame.width != w || cameraFrame.height != h -> Bitmap.createScaledBitmap(cameraFrame, w, h, true)
+                else -> cameraFrame
+            }
+            renderOverlayOnto(base, density) {
+                drawArchitecturalShapeOverlay(
+                    mode = p.shapeMode,
+                    points = p.points,
+                    result = p.result,
+                    displayUnit = p.displayUnit,
+                    lineColor = p.tokens.laserPrimary,
+                    nodeBlue = p.tokens.arNodeBlue,
+                    highContrast = p.tokens.highContrast,
+                    activeHandleIndex = -1
+                )
+            }
+        }
+        handle?.register(provider)
+        onDispose { handle?.unregister(provider) }
+    }
 
     Box(
         modifier = modifier
@@ -117,6 +167,7 @@ fun ArViewportCanvas(
                 analyzerEnabledProvider = { latestAuto },
                 onOutlineDetected = { latestOnDetected(it) },
                 onCameraUnavailable = { cameraError = true },
+                onPreviewViewChanged = { previewViewRef = it },
                 modifier = Modifier.fillMaxSize()
             )
         } else {
@@ -202,11 +253,11 @@ private fun CameraXPreviewLayer(
     analyzerEnabledProvider: () -> Boolean,
     onOutlineDetected: (DetectedOutline) -> Unit,
     onCameraUnavailable: () -> Unit,
+    onPreviewViewChanged: (PreviewView?) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
     var boundCamera by remember { mutableStateOf<Camera?>(null) }
 
     val previewView = remember {
@@ -217,6 +268,11 @@ private fun CameraXPreviewLayer(
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         }
+    }
+
+    DisposableEffect(previewView) {
+        onPreviewViewChanged(previewView)
+        onDispose { onPreviewViewChanged(null) }
     }
 
     LaunchedEffect(flashlightEnabled, boundCamera) {
@@ -231,11 +287,16 @@ private fun CameraXPreviewLayer(
     }
 
     DisposableEffect(lifecycleOwner) {
+        // Owned by this effect so a lifecycle-owner change never reuses a shut-down executor.
+        val analysisExecutor = Executors.newSingleThreadExecutor()
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         var provider: ProcessCameraProvider? = null
+        var disposed = false
         val listener = Runnable {
+            if (disposed) return@Runnable
             try {
-                provider = cameraProviderFuture.get()
+                val cameraProvider = cameraProviderFuture.get()
+                provider = cameraProvider
                 val preview = Preview.Builder().build().also {
                     it.surfaceProvider = previewView.surfaceProvider
                 }
@@ -253,17 +314,17 @@ private fun CameraXPreviewLayer(
                         )
                     }
 
-                val selector = if (provider!!.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)) {
+                val selector = if (cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)) {
                     CameraSelector.DEFAULT_BACK_CAMERA
-                } else if (provider!!.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
+                } else if (cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
                     CameraSelector.DEFAULT_FRONT_CAMERA
                 } else {
                     onCameraUnavailable()
                     return@Runnable
                 }
 
-                provider!!.unbindAll()
-                boundCamera = provider!!.bindToLifecycle(lifecycleOwner, selector, preview, imageAnalysis)
+                cameraProvider.unbindAll()
+                boundCamera = cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, imageAnalysis)
             } catch (e: Exception) {
                 Log.w("CalibraCamera", "CameraX bind unavailable, falling back to studio spatial surface", e)
                 onCameraUnavailable()
@@ -272,6 +333,7 @@ private fun CameraXPreviewLayer(
         cameraProviderFuture.addListener(listener, ContextCompat.getMainExecutor(context))
 
         onDispose {
+            disposed = true
             try {
                 boundCamera?.cameraControl?.enableTorch(false)
                 provider?.unbindAll()
@@ -288,6 +350,17 @@ private fun CameraXPreviewLayer(
     )
 }
 
+/** Inputs for a calibrated-mode photo capture, kept fresh via rememberUpdatedState. */
+private data class CalibratedCaptureParams(
+    val liveCamera: Boolean,
+    val flashlight: Boolean,
+    val shapeMode: ShapeMode,
+    val points: List<NormPoint>,
+    val result: ShapeMeasurementResult,
+    val displayUnit: LengthDisplayUnit,
+    val tokens: CalibraVisualTokens
+)
+
 /**
  * Refined architectural interior spatial studio backdrop shown when camera is toggled off
  * or unavailable on a device, featuring soft warm architectural lighting and receding room planes.
@@ -299,9 +372,15 @@ private fun StudioArchitecturalBackdrop(
     modifier: Modifier = Modifier
 ) {
     Canvas(modifier = modifier) {
+        drawStudioBackdrop(highContrast, illuminated)
+    }
+}
+
+private fun DrawScope.drawStudioBackdrop(highContrast: Boolean, illuminated: Boolean) {
+    run {
         if (highContrast) {
             drawRect(Color.Black)
-            return@Canvas
+            return
         }
         val topTone = if (illuminated) Color(0xFF474E5A) else Color(0xFF282D36)
         val midTone = if (illuminated) Color(0xFF333944) else Color(0xFF1E232B)
@@ -643,7 +722,7 @@ private fun DrawScope.drawArchitecturalShapeOverlay(
  * Pure-white rounded dimension pill with crisp dark typography, rotated cleanly along edges
  * just like the architectural labels (`3.30m`, `2.48m`, `4.17m`) in the reference design.
  */
-private fun DrawScope.drawWhiteDimensionPill(
+internal fun DrawScope.drawWhiteDimensionPill(
     center: Offset,
     text: String,
     angleDeg: Float,
@@ -690,7 +769,7 @@ private fun DrawScope.drawWhiteDimensionPill(
     }
 }
 
-private fun DrawScope.drawSurfaceCenterWatermark(center: Offset, text: String) {
+internal fun DrawScope.drawSurfaceCenterWatermark(center: Offset, text: String) {
     val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = android.graphics.Color.argb(120, 0, 0, 0)
         textSize = 42f

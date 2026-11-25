@@ -17,7 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Contrast
 import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.HelpOutline
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Straighten
@@ -46,6 +46,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -56,12 +57,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.ar.ArSessionController
 import com.example.ui.calibrate.CalibrateScreen
 import com.example.ui.convert.ConvertScreen
 import com.example.ui.history.HistoryScreen
@@ -94,6 +97,14 @@ fun CalibraApp(
     val prefs by viewModel.preferences.collectAsStateWithLifecycle()
     val showTutorial by viewModel.showTutorial.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // Hoisted above the tabs so AR anchors survive a trip to History/Convert (the session is
+    // paused, not destroyed, while the Measure tab is hidden).
+    val context = LocalContext.current
+    val arController = remember { ArSessionController(context.applicationContext) }
+    DisposableEffect(arController) {
+        onDispose { arController.close() }
+    }
 
     BackHandler(enabled = currentDest != CalibraDestination.MEASURE) {
         currentDest = CalibraDestination.MEASURE
@@ -195,7 +206,7 @@ fun CalibraApp(
                                 modifier = Modifier.testTag("top_tutorial_button")
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.HelpOutline,
+                                    imageVector = Icons.AutoMirrored.Filled.HelpOutline,
                                     contentDescription = stringResource(R.string.action_tutorial),
                                     tint = MaterialTheme.colorScheme.primary
                                 )
@@ -283,6 +294,7 @@ fun CalibraApp(
                     when (currentDest) {
                         CalibraDestination.MEASURE -> MeasureScreen(
                             viewModel = viewModel,
+                            arController = arController,
                             isExpanded = isExpanded,
                             onNavigateToCalibrate = { currentDest = CalibraDestination.CALIBRATE }
                         )
