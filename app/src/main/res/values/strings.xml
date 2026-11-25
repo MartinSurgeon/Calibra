@@ -1,0 +1,68 @@
+<resources>
+    <string name="app_name">Calibra</string>
+
+    <!-- Navigation -->
+    <string name="nav_measure">Measure</string>
+    <string name="nav_convert">Convert</string>
+    <string name="nav_history">History</string>
+    <string name="nav_calibrate">Calibrate</string>
+
+    <!-- Common Actions -->
+    <string name="action_save">Save</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_reset">Reset</string>
+    <string name="action_undo">Undo</string>
+    <string name="action_copy">Copy</string>
+    <string name="action_share">Share</string>
+    <string name="action_export_pdf">Export PDF</string>
+    <string name="action_export_csv">Export CSV</string>
+    <string name="action_backup_json">Backup Vault</string>
+    <string name="action_restore_json">Restore Vault</string>
+    <string name="action_tutorial">Interactive Guide</string>
+    <string name="action_toggle_theme">Switch Theme</string>
+    <string name="action_high_contrast">High Contrast</string>
+
+    <!-- Measure Screen -->
+    <string name="measure_title">AR Measure</string>
+    <string name="measure_camera_permission_title">Enable Camera for AR Outlining</string>
+    <string name="measure_camera_permission_desc">Grant camera access to scan objects in real time with live edge outlining and calibrated dimensions, or continue in Precision Drafting Mode.</string>
+    <string name="measure_grant_camera">Enable AR Camera</string>
+    <string name="measure_use_drafting">Drafting Mode</string>
+    <string name="measure_auto_outline">Auto-Outline</string>
+    <string name="measure_manual_anchors">Manual Pins</string>
+    <string name="measure_save_measurement">Save Measurement</string>
+    <string name="measure_level_locked">LEVEL LOCKED</string>
+    <string name="measure_tilt_warning">TILT</string>
+    <string name="measure_add_vertex">Tap canvas to add vertices</string>
+    <string name="measure_drag_handles">Drag handles to refine outline</string>
+
+    <!-- Convert Screen -->
+    <string name="convert_title">Unit Converter</string>
+    <string name="convert_from">From</string>
+    <string name="convert_to">To</string>
+    <string name="convert_swap">Swap units</string>
+    <string name="convert_all_units">All Equivalent Units</string>
+    <string name="convert_save_log">Log Conversion</string>
+
+    <!-- History Screen -->
+    <string name="history_title">Measurement Log</string>
+    <string name="history_search_hint">Search measurements, shapes, or notes…</string>
+    <string name="history_empty_title">No Measurements Yet</string>
+    <string name="history_empty_desc">Capture real-time AR dimensions or log a unit conversion to build your offline-backed archive.</string>
+    <string name="history_start_measuring">Start Measuring</string>
+
+    <!-- Calibrate & Settings Screen -->
+    <string name="calibrate_title">Calibrate &amp; Settings</string>
+    <string name="calibrate_reference_section">Reference Object Calibration</string>
+    <string name="calibrate_apply">Apply Calibration</string>
+    <string name="calibrate_appearance_section">Display &amp; Accessibility</string>
+    <string name="calibrate_backup_section">Offline Vault &amp; Cross-Device Backup</string>
+    <string name="calibrate_cloud_note">Offline SQLite storage is active. Use Backup/Restore JSON or Export PDF/CSV to transfer data between mobile and desktop. Real-time cloud sync requires Firebase.</string>
+
+    <!-- Tutorial -->
+    <string name="tutorial_skip">Skip</string>
+    <string name="tutorial_next">Next</string>
+    <string name="tutorial_back">Back</string>
+    <string name="tutorial_finish">Start Measuring</string>
+</resources>

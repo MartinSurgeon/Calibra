@@ -1,0 +1,6 @@
+{
+  "name": "Calibra",
+  "description": "Precision AR camera measurement, real-time shape outlining, unit conversion, offline & cloud-synced history, and PDF/CSV export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
