@@ -31,6 +31,7 @@ import com.example.domain.ShapeMeasurementResult
 import com.example.domain.ShapeMode
 import com.example.domain.SpatialMeasurementEngine
 import com.example.domain.UnitConverterEngine
+import com.example.domain.Vec3
 import com.example.ui.theme.ThemeMode
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -89,6 +90,16 @@ data class ConverterUiState(
             target to UnitConverterEngine.formatValue(result, precisionDecimals)
         }
 }
+
+/** A sketched shape to save: its measurement plus the geometry stored for thumbnails and export. */
+data class SketchSaveRequest(
+    val result: ShapeMeasurementResult,
+    /** Normalized drawing points in the layout of [result]'s shape mode. */
+    val blueprint: List<NormPoint>,
+    /** Surface points in meters (stored for AR sketches only). */
+    val worldPoints: List<Vec3>,
+    val source: MeasurementSource
+)
 
 data class HistoryFilterState(
     val query: String = "",
@@ -434,10 +445,39 @@ class CalibraViewModel(
             worldPointsJson = ar?.let { SpatialMeasurementEngine.serialize(it.points) }.orEmpty(),
             photoPath = photo
         )
+        persist(entity)
+    }
+
+    /** Saves the focused shape of a sketch, with the annotated frame as its photo. */
+    fun saveSketchMeasurement(title: String, notes: String, request: SketchSaveRequest) {
+        val result = request.result
+        val photo = _pendingSnapshotPath.value.orEmpty()
+        _pendingSnapshotPath.value = null
+        val isAr = request.source == MeasurementSource.ARCORE
+        val entity = MeasurementEntity(
+            title = title.trim().ifBlank { "Sketch ${result.shapeMode.label}" },
+            category = result.categoryName,
+            shapeMode = result.shapeMode.name,
+            primaryValue = result.primaryValue,
+            primaryUnit = result.primaryUnitSymbol,
+            secondarySummary = result.secondarySummary,
+            notes = notes.trim(),
+            calibrationRef = if (isAr) "ARCore surface sketch" else "${preferences.value.calibration.referenceName} (sketch)",
+            pointsJson = GeometryEngine.serializePoints(request.blueprint),
+            createdAtMillis = System.currentTimeMillis(),
+            source = request.source.name,
+            worldPointsJson = if (isAr) SpatialMeasurementEngine.serialize(request.worldPoints) else "",
+            photoPath = photo
+        )
+        persist(entity)
+    }
+
+    private fun persist(entity: MeasurementEntity) {
         viewModelScope.launch {
             measurementRepo.insert(entity)
             _snackbarMessages.tryEmit(
-                if (photo.isNotBlank()) "Saved \"$cleanTitle\" with photo" else "Saved \"$cleanTitle\" to offline log"
+                if (entity.photoPath.isNotBlank()) "Saved \"${entity.title}\" with photo"
+                else "Saved \"${entity.title}\" to offline log"
             )
         }
     }

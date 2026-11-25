@@ -14,22 +14,29 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import kotlin.math.max
 
+/** Renders the active viewport into a bitmap, with or without its measurement overlay. */
+typealias ViewportFrameProvider = suspend (withOverlay: Boolean) -> Bitmap?
+
 /**
  * Lets the Measure screen grab "what the user sees" from whichever viewport is active (ARCore,
  * CameraX or the studio backdrop) without knowing how that viewport renders.
  */
 class ViewportCaptureHandle {
-    private var provider: (suspend () -> Bitmap?)? = null
+    private var provider: ViewportFrameProvider? = null
 
-    fun register(p: suspend () -> Bitmap?) {
+    fun register(p: ViewportFrameProvider) {
         provider = p
     }
 
-    fun unregister(p: suspend () -> Bitmap?) {
+    fun unregister(p: ViewportFrameProvider) {
         if (provider === p) provider = null
     }
 
-    suspend fun capture(): Bitmap? = provider?.invoke()
+    /** The view with the measurement overlay burned in, for photos. */
+    suspend fun capture(): Bitmap? = provider?.invoke(true)
+
+    /** The clean camera (or studio) frame without overlays, e.g. to freeze it for sketching. */
+    suspend fun captureFrame(): Bitmap? = provider?.invoke(false)
 }
 
 /** Draws [draw] on top of [base] with a Compose [DrawScope]; returns a mutable ARGB bitmap. */

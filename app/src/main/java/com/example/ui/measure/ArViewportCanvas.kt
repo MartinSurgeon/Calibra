@@ -115,7 +115,7 @@ fun ArViewportCanvas(
     // Photo capture: camera frame (or studio backdrop) with the dimension overlay burned in.
     DisposableEffect(captureHandle) {
         val handle = captureHandle
-        val provider: suspend () -> Bitmap? = provider@{
+        val provider: ViewportFrameProvider = provider@{ withOverlay ->
             val p = latestCaptureParams
             val w = viewportSize.width
             val h = viewportSize.height
@@ -128,6 +128,7 @@ fun ArViewportCanvas(
                 cameraFrame.width != w || cameraFrame.height != h -> Bitmap.createScaledBitmap(cameraFrame, w, h, true)
                 else -> cameraFrame
             }
+            if (!withOverlay) return@provider base
             renderOverlayOnto(base, density) {
                 drawArchitecturalShapeOverlay(
                     mode = p.shapeMode,

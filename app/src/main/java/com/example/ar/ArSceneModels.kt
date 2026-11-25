@@ -114,3 +114,9 @@ sealed interface ArEvent {
 
 /** A camera frame read back from GL together with the overlay state of that exact frame. */
 class ArCapture(val bitmap: Bitmap, val state: ArFrameState)
+
+/**
+ * A clean camera frame frozen for sketching, plus the surface lookup that measures shapes drawn on
+ * it. [tracking] is false when ARCore had lost tracking at freeze time (nothing is measurable).
+ */
+class ArFrozenFrame(val bitmap: Bitmap, val surfaceMap: FrozenSurfaceMap, val tracking: Boolean)

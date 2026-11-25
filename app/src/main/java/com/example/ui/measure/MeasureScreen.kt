@@ -2,6 +2,7 @@ package com.example.ui.measure
 
 import android.Manifest
 import android.content.pm.PackageManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Contrast
+import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.FlashlightOff
 import androidx.compose.material.icons.filled.FlashlightOn
@@ -79,6 +81,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -100,11 +103,15 @@ import com.example.ar.ArSessionStatus
 import com.example.ar.ArSurfaceKind
 import com.example.ar.ArTrackingQuality
 import com.example.ar.findActivity
+import com.example.domain.CalibratedSketchScale
+import com.example.domain.GeometryEngine
 import com.example.domain.LengthDisplayUnit
 import com.example.domain.MeasurementSource
 import com.example.domain.NormPoint
 import com.example.domain.ShapeMeasurementResult
 import com.example.domain.ShapeMode
+import com.example.domain.SketchEngine
+import com.example.domain.SketchMeasurement
 import com.example.domain.SpatialMeasurementEngine
 import com.example.domain.UnitConverterEngine
 import com.example.ui.history.SnapshotImage
@@ -112,6 +119,7 @@ import com.example.ui.theme.ArNodeBlue
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.LocalCalibraTokens
 import com.example.viewmodel.CalibraViewModel
+import com.example.viewmodel.SketchSaveRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -154,6 +162,16 @@ fun MeasureScreen(
     var installPromptDismissed by rememberSaveable { mutableStateOf(false) }
     var capturing by remember { mutableStateOf(false) }
     val captureHandle = remember { ViewportCaptureHandle() }
+    val density = LocalDensity.current
+
+    // Sketch mode: a frozen frame with a drawing overlay (null = live camera).
+    var sketchSession by remember { mutableStateOf<SketchSession?>(null) }
+    val sketchEditor = remember { SketchEditorState() }
+    var freezingSketch by remember { mutableStateOf(false) }
+    var savingSketch by remember { mutableStateOf(false) }
+    var confirmSketchExit by remember { mutableStateOf(false) }
+    var pendingSketchSave by remember { mutableStateOf<SketchSaveRequest?>(null) }
+    var pendingSketchNotes by remember { mutableStateOf("") }
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -324,6 +342,103 @@ fun MeasureScreen(
             showSaveDialog = true
         }
     }
+
+    /** Freezes what the camera shows and opens the sketch overlay on it. */
+    fun startSketch() {
+        if (freezingSketch || sketchSession != null) return
+        if (prefs.hapticFeedback) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        freezingSketch = true
+        val useAr = arEngineActive
+        val calibration = prefs.calibration
+        val tilt = if (levelReading.hasSensor) levelReading.planeDeviationDeg else 0f
+        scope.launch {
+            val session = if (useAr) {
+                arController.freezeFrame()?.let { frozen ->
+                    SketchSession(
+                        bitmap = frozen.bitmap,
+                        scale = frozen.surfaceMap,
+                        source = MeasurementSource.ARCORE,
+                        measurable = frozen.tracking && frozen.surfaceMap.hasSurfaces
+                    )
+                }
+            } else {
+                captureHandle.captureFrame()?.let { frame ->
+                    SketchSession(
+                        bitmap = frame,
+                        scale = CalibratedSketchScale(
+                            cmPerNormWidth = GeometryEngine.effectiveCmPerWidth(calibration, tilt),
+                            aspectHeightOverWidth = frame.height.toFloat() / frame.width
+                        ),
+                        source = MeasurementSource.CALIBRATED,
+                        measurable = true
+                    )
+                }
+            }
+            freezingSketch = false
+            if (session == null) {
+                viewModel.notifyUser("Couldn't freeze the camera view — try again")
+                return@launch
+            }
+            sketchEditor.reset()
+            sketchSession = session
+        }
+    }
+
+    fun exitSketch(discardConfirmed: Boolean = false) {
+        if (!discardConfirmed && sketchEditor.shapes.isNotEmpty()) {
+            confirmSketchExit = true
+            return
+        }
+        sketchSession = null
+        sketchEditor.reset()
+    }
+
+    /** Burns the sketch into the frozen frame and opens the save dialog for the focused shape. */
+    fun saveSketch(measurements: Map<Long, SketchMeasurement?>) {
+        val session = sketchSession ?: return
+        val shapes = sketchEditor.shapes
+        val focus = sketchEditor.selected ?: shapes.lastOrNull()
+        if (focus == null) {
+            viewModel.notifyUser("Draw a shape to measure first")
+            return
+        }
+        val number = sketchEditor.numberOf(focus)
+        val measured = measurements[focus.id]
+        if (measured == null) {
+            viewModel.notifyUser("Shape #$number isn't over a detected surface — select a measured shape")
+            return
+        }
+        if (savingSketch) return
+        savingSketch = true
+        val highContrast = prefs.highContrast
+        val summaries = shapes.mapIndexed { i, s ->
+            "#${i + 1} ${measurements[s.id]?.summary ?: "${s.tool.label} (no surface)"}"
+        }
+        val r = measured.result
+        scope.launch {
+            val stamp = SimpleDateFormat("d MMM yyyy, HH:mm", Locale.US).format(Date())
+            val photo = withContext(Dispatchers.Default) {
+                stampMeasurementCaption(
+                    snapshot = renderSketchPhoto(session, shapes, measurements, highContrast, density),
+                    headline = "#$number ${r.primaryLabel}  ${r.formattedPrimary}",
+                    detail = summaries.joinToString("   "),
+                    footer = "CALIBRA  •  SKETCH  •  ${session.source.label}  •  $stamp"
+                )
+            }
+            viewModel.storePendingSnapshot(photo)
+            pendingSketchSave = SketchSaveRequest(
+                result = r,
+                blueprint = SketchEngine.blueprintPoints(focus, session.aspect),
+                worldPoints = measured.worldPoints,
+                source = session.source
+            )
+            pendingSketchNotes = if (shapes.size > 1) summaries.joinToString("\n") else ""
+            savingSketch = false
+            showSaveDialog = true
+        }
+    }
+
+    BackHandler(enabled = sketchSession != null) { exitSketch() }
 
     val placedCount = arSnapshot?.takeIf { it.mode == measureState.shapeMode && !it.isComplete }?.placedCount ?: 0
     val arShapeComplete = arSnapshot?.let { it.mode == measureState.shapeMode && it.isComplete } == true
@@ -511,6 +626,39 @@ fun MeasureScreen(
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White
+                            )
+                        }
+                    }
+
+                    // Sketch: freeze the view and draw lines / shapes on it to measure
+                    Surface(
+                        onClick = ::startSketch,
+                        enabled = !freezingSketch,
+                        shape = RoundedCornerShape(50),
+                        color = Color(0xE6FBBF24),
+                        border = BorderStroke(1.dp, Color.White),
+                        modifier = Modifier.testTag("sketch_mode_chip")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            if (freezingSketch) {
+                                CircularProgressIndicator(
+                                    color = Color(0xFF111827),
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            } else {
+                                Icon(Icons.Default.Draw, contentDescription = null, tint = Color(0xFF111827), modifier = Modifier.size(15.dp))
+                            }
+                            Text(
+                                text = "Sketch",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF111827)
                             )
                         }
                     }
@@ -881,6 +1029,24 @@ fun MeasureScreen(
                     )
                 }
             }
+
+            // 9. Sketch mode covers the live view (and takes all touches) with the frozen frame.
+            sketchSession?.let { session ->
+                SketchWorkspace(
+                    session = session,
+                    editor = sketchEditor,
+                    displayUnit = prefs.displayUnit,
+                    highContrast = prefs.highContrast,
+                    hapticEnabled = prefs.hapticFeedback,
+                    saving = savingSketch,
+                    padStatusBar = !isExpanded,
+                    onExit = { exitSketch() },
+                    onSave = ::saveSketch,
+                    onCycleUnit = ::cycleUnit,
+                    onMessage = viewModel::notifyUser,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
     }
 
@@ -922,17 +1088,55 @@ fun MeasureScreen(
     }
 
     if (showSaveDialog) {
+        val sketch = pendingSketchSave
+        val dialogResult = sketch?.result ?: result
         SaveMeasurementDialog(
-            result = result,
+            result = dialogResult,
             photoPath = pendingSnapshot,
-            sourceLabel = if (arEngineActive) MeasurementSource.ARCORE.label else MeasurementSource.CALIBRATED.label,
+            sourceLabel = when {
+                sketch != null -> "${sketch.source.label} • sketch"
+                arEngineActive -> MeasurementSource.ARCORE.label
+                else -> MeasurementSource.CALIBRATED.label
+            },
+            initialTitle = if (sketch != null) {
+                "Sketch — ${dialogResult.primaryLabel} ${dialogResult.formattedPrimary}"
+            } else {
+                "${dialogResult.shapeMode.label} — ${dialogResult.formattedPrimary}"
+            },
+            initialNotes = if (sketch != null) pendingSketchNotes else "",
             onDismiss = {
                 showSaveDialog = false
+                pendingSketchSave = null
                 viewModel.discardPendingSnapshot()
             },
             onConfirm = { title, notes ->
-                viewModel.saveCurrentMeasurement(title, notes)
+                if (sketch != null) {
+                    viewModel.saveSketchMeasurement(title, notes, sketch)
+                } else {
+                    viewModel.saveCurrentMeasurement(title, notes)
+                }
+                pendingSketchSave = null
                 showSaveDialog = false
+            }
+        )
+    }
+
+    if (confirmSketchExit) {
+        AlertDialog(
+            onDismissRequest = { confirmSketchExit = false },
+            title = { Text("Discard this sketch?") },
+            text = { Text("Shapes you haven't saved will be lost.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmSketchExit = false
+                        exitSketch(discardConfirmed = true)
+                    },
+                    modifier = Modifier.testTag("confirm_discard_sketch_button")
+                ) { Text("Discard") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmSketchExit = false }) { Text("Keep drawing") }
             }
         )
     }
@@ -1309,11 +1513,13 @@ private fun SaveMeasurementDialog(
     result: ShapeMeasurementResult,
     photoPath: String?,
     sourceLabel: String,
+    initialTitle: String,
+    initialNotes: String,
     onDismiss: () -> Unit,
     onConfirm: (String, String) -> Unit
 ) {
-    var title by remember { mutableStateOf("${result.shapeMode.label} — ${result.formattedPrimary}") }
-    var notes by remember { mutableStateOf("") }
+    var title by remember { mutableStateOf(initialTitle.take(64)) }
+    var notes by remember { mutableStateOf(initialNotes.take(200)) }
 
     AlertDialog(
         onDismissRequest = onDismiss,

@@ -134,13 +134,8 @@ object GeometryEngine {
         tiltDegrees: Float = 0f,
         extrusionDepthCm: Float = 260f
     ): ShapeMeasurementResult {
-        val ratio = aspectRatioHeightOverWidth.coerceIn(0.4f, 3.0f)
-        val tiltFactor = if (calibration.tiltCompensationEnabled) {
-            val clamped = abs(tiltDegrees).coerceIn(0f, 65f)
-            cos(clamped * PI / 180.0).toFloat().coerceIn(0.42f, 1.0f)
-        } else 1.0f
-
-        val cmPerWidth = calibration.cmPerNormWidth * tiltFactor
+        val ratio = clampAspect(aspectRatioHeightOverWidth)
+        val cmPerWidth = effectiveCmPerWidth(calibration, tiltDegrees)
 
         fun toCm(a: NormPoint, b: NormPoint): Double {
             val dx = (b.x - a.x) * cmPerWidth
@@ -364,6 +359,18 @@ object GeometryEngine {
             sum += (x1 * y2 - x2 * y1)
         }
         return abs(sum) * 0.5
+    }
+
+    /** Viewport aspect (height / width) clamped to the range the calibrated model supports. */
+    fun clampAspect(aspectRatioHeightOverWidth: Float): Float = aspectRatioHeightOverWidth.coerceIn(0.4f, 3.0f)
+
+    /** Centimeters spanned by the full viewport width, after optional tilt compensation. */
+    fun effectiveCmPerWidth(calibration: CalibrationProfile, tiltDegrees: Float): Float {
+        val tiltFactor = if (calibration.tiltCompensationEnabled) {
+            val clamped = abs(tiltDegrees).coerceIn(0f, 65f)
+            cos(clamped * PI / 180.0).toFloat().coerceIn(0.42f, 1.0f)
+        } else 1.0f
+        return calibration.cmPerNormWidth * tiltFactor
     }
 
     fun calibrateFromSpan(knownCm: Double, normalizedSpan: Float): Float {

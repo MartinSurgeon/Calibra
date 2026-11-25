@@ -52,6 +52,7 @@ import kotlin.math.acos
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
@@ -75,6 +76,7 @@ class ArSessionController(context: Context) : GLSurfaceView.Renderer {
     private val displayRotationHelper = DisplayRotationHelper(appContext)
     private val commands = ConcurrentLinkedQueue<Command>()
     private val captureRequests = ConcurrentLinkedQueue<CompletableDeferred<ArCapture?>>()
+    private val freezeRequests = ConcurrentLinkedQueue<CompletableDeferred<ArFrozenFrame?>>()
 
     @Volatile private var session: Session? = null
     @Volatile private var arConfig: Config? = null
@@ -169,6 +171,19 @@ class ArSessionController(context: Context) : GLSurfaceView.Renderer {
         captureRequests.add(request)
         val result = withTimeoutOrNull(timeoutMs) { request.await() }
         if (result == null) captureRequests.remove(request)
+        return result
+    }
+
+    /**
+     * Freezes the next camera frame for sketching: reads it back and samples ARCore's surfaces
+     * across the whole view, so shapes drawn on the still image can be measured in meters.
+     */
+    suspend fun freezeFrame(timeoutMs: Long = 4_000L): ArFrozenFrame? {
+        if (!isSessionResumed) return null
+        val request = CompletableDeferred<ArFrozenFrame?>()
+        freezeRequests.add(request)
+        val result = withTimeoutOrNull(timeoutMs) { request.await() }
+        if (result == null) freezeRequests.remove(request)
         return result
     }
 
@@ -414,6 +429,7 @@ class ArSessionController(context: Context) : GLSurfaceView.Renderer {
         _frameState.value = state
         publishMeasurement(target)
         serviceCaptures(state)
+        serviceFreezes(frame, camera, tracking)
     }
 
     private fun applyPendingConfig(s: Session) {
@@ -461,9 +477,13 @@ class ArSessionController(context: Context) : GLSurfaceView.Renderer {
         val closesPolygon: Boolean
     )
 
-    private fun centerHit(frame: Frame, camera: Camera): SurfaceHit? {
+    private fun centerHit(frame: Frame, camera: Camera): SurfaceHit? =
+        surfaceHitAt(frame, camera, viewWidth / 2f, viewHeight / 2f)
+
+    /** First usable surface under view pixel ([x], [y]): plane interior, depth or oriented point. */
+    private fun surfaceHitAt(frame: Frame, camera: Camera, x: Float, y: Float): SurfaceHit? {
         val hits = try {
-            frame.hitTest(viewWidth / 2f, viewHeight / 2f)
+            frame.hitTest(x, y)
         } catch (t: Throwable) {
             return null
         }
@@ -1009,9 +1029,51 @@ class ArSessionController(context: Context) : GLSurfaceView.Renderer {
         }
     }
 
+    private fun serviceFreezes(frame: Frame, camera: Camera, tracking: Boolean) {
+        if (freezeRequests.isEmpty()) return
+        var frozen = readFramebuffer(viewWidth, viewHeight)?.let { bitmap ->
+            val cell = viewWidth / FREEZE_GRID_COLUMNS.toFloat()
+            val map = FrozenSurfaceMap(
+                width = viewWidth,
+                height = viewHeight,
+                viewMatrix = viewMatrix.copyOf(),
+                projectionMatrix = projectionMatrix.copyOf(),
+                samples = if (tracking) sampleSurfaces(frame, camera, cell) else emptyList(),
+                maxGapPx = cell * FREEZE_MAX_GAP_CELLS
+            )
+            ArFrozenFrame(bitmap, map, tracking)
+        }
+        while (true) {
+            val request = freezeRequests.poll() ?: break
+            request.complete(frozen)
+            frozen = null // only the first requester receives the frame
+        }
+    }
+
+    /** Hit-tests a grid of view pixels (~[cell] px apart) against ARCore's surfaces. */
+    private fun sampleSurfaces(frame: Frame, camera: Camera, cell: Float): List<FrozenSurfaceMap.Sample> {
+        val columns = FREEZE_GRID_COLUMNS
+        val rows = max(1, (viewHeight / cell).roundToInt())
+        val rowHeight = viewHeight / rows.toFloat()
+        val samples = ArrayList<FrozenSurfaceMap.Sample>(columns * rows)
+        for (r in 0 until rows) {
+            for (c in 0 until columns) {
+                val x = (c + 0.5f) * cell
+                val y = (r + 0.5f) * rowHeight
+                val hit = surfaceHitAt(frame, camera, x, y) ?: continue
+                samples.add(FrozenSurfaceMap.Sample(x, y, hit.position, Vec3.of(hit.pose.yAxis).normalized()))
+            }
+        }
+        return samples
+    }
+
     private fun failPendingCaptures() {
         while (true) {
             val request = captureRequests.poll() ?: break
+            request.complete(null)
+        }
+        while (true) {
+            val request = freezeRequests.poll() ?: break
             request.complete(null)
         }
     }
@@ -1051,6 +1113,8 @@ class ArSessionController(context: Context) : GLSurfaceView.Renderer {
         const val RING_SEGMENTS = 48
         const val ARC_SEGMENTS = 16
         const val PUBLISH_EPSILON_M = 0.002
+        const val FREEZE_GRID_COLUMNS = 16
+        const val FREEZE_MAX_GAP_CELLS = 1.5f
 
         fun Pose.toVec3() = Vec3(tx().toDouble(), ty().toDouble(), tz().toDouble())
 

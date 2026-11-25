@@ -1,6 +1,5 @@
 package com.example.ui.measure
 
-import android.graphics.Bitmap
 import android.opengl.GLSurfaceView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -93,8 +92,9 @@ fun ArCoreViewport(
     val latestTokens by rememberUpdatedState(tokens)
 
     DisposableEffect(captureHandle, controller) {
-        val provider: suspend () -> Bitmap? = provider@{
+        val provider: ViewportFrameProvider = provider@{ withOverlay ->
             val capture = controller.captureFrame() ?: return@provider null
+            if (!withOverlay) return@provider capture.bitmap
             renderOverlayOnto(capture.bitmap, density) {
                 drawArSceneOverlay(
                     state = capture.state,
